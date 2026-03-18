@@ -26,6 +26,15 @@ app.get("/proxy", async (req, res) => {
     return
   }
 
+  // ✅ URLバリデーション追加
+  if (!/^https?:\/\//i.test(url)) {
+    return res.status(400).send("invalid url")
+  }
+
+  if (url.includes("localhost") || url.includes("127.0.0.1")) {
+    return res.status(403).send("forbidden")
+  }
+
   if (!browser) {
     res.status(503).send("browser not ready")
     return
@@ -41,18 +50,26 @@ app.get("/proxy", async (req, res) => {
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36"
     )
 
+    await page.setCacheEnabled(true)
+
     await page.goto(url, {
       waitUntil: "networkidle2",
       timeout: 30000
     })
 
-    const html = await page.content()
+    let html = await page.content()
+
+    // ✅ baseタグ注入（超重要）
+    html = html.replace(
+      "<head>",
+      `<head><base href="${url}">`
+    )
 
     res.send(html)
 
   } catch (err) {
 
-    res.status(500).send(err.message)
+    res.status(500).send("Proxy Error: " + err.message)
 
   } finally {
     if (page) await page.close()
@@ -68,4 +85,3 @@ async function start() {
 }
 
 start()
-　
