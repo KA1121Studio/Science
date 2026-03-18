@@ -1,87 +1,70 @@
 import express from "express"
-import puppeteer from "puppeteer-core"
-import chromium from "@sparticuz/chromium"
+import { createProxyMiddleware } from "http-proxy-middleware"
 
 const app = express()
 const PORT = process.env.PORT || 3000
 
 app.use(express.static("public"))
 
-let browser
-
-async function initBrowser() {
-  browser = await puppeteer.launch({
-    args: chromium.args,
-    executablePath: await chromium.executablePath(),
-    headless: true
-  })
+function rewriteHtml(body, baseUrl) {
+  return body
+    .replace(/(href|src)=["']\//g, `$1="/proxy?url=${baseUrl}/`)
+    .replace(/(href|src)=["'](https?:\/\/[^"']+)["']/g, (match, attr, url) => {
+      return `${attr}="/proxy?url=${url}"`
+    })
 }
 
-app.get("/proxy", async (req, res) => {
+app.use("/proxy", (req, res, next) => {
 
-  const url = req.query.url
-
-  if (!url) {
-    res.send("url parameter required")
-    return
-  }
-
-  // URLバリデーション追加
-  if (!/^https?:\/\//i.test(url)) {
+  let target = req.query.url
+  if (!target || !/^https?:\/\//i.test(target)) {
     return res.status(400).send("invalid url")
   }
 
-  if (url.includes("localhost") || url.includes("127.0.0.1")) {
-    return res.status(403).send("forbidden")
-  }
+  const proxy = createProxyMiddleware({
+    target,
+    changeOrigin: true,
+    ws: true,
+    selfHandleResponse: true,
 
-  if (!browser) {
-    res.status(503).send("browser not ready")
-    return
-  }
+    onProxyReq(proxyReq) {
+      proxyReq.setHeader("User-Agent", "Mozilla/5.0")
+    },
 
-  let page
+    onProxyRes(proxyRes, req, res) {
 
-  try {
+      const contentType = proxyRes.headers["content-type"] || ""
 
-    page = await browser.newPage()
+      // 🔁 リダイレクト修正
+      if (proxyRes.headers["location"]) {
+        proxyRes.headers["location"] =
+          "/proxy?url=" + proxyRes.headers["location"]
+      }
 
-    await page.setUserAgent(
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36"
-    )
+      // HTMLだけ書き換え
+      if (contentType.includes("text/html")) {
 
-    await page.setCacheEnabled(true)
+        let body = Buffer.from([])
 
-    await page.goto(url, {
-      waitUntil: "networkidle2",
-      timeout: 30000
-    })
+        proxyRes.on("data", chunk => {
+          body = Buffer.concat([body, chunk])
+        })
 
-    let html = await page.content()
+        proxyRes.on("end", () => {
+          const html = body.toString("utf-8")
+          const fixed = rewriteHtml(html, target)
+          res.send(fixed)
+        })
 
-    // baseタグ注入
-    html = html.replace(
-      "<head>",
-      `<head><base href="${url}">`
-    )
+      } else {
+        proxyRes.pipe(res)
+      }
+    }
+  })
 
-    res.send(html)
-
-  } catch (err) {
-
-    res.status(500).send("Proxy Error: " + err.message)
-
-  } finally {
-    if (page) await page.close()
-  }
-
+  proxy(req, res, next)
 })
 
-async function start() {
-  await initBrowser()
-  app.listen(PORT, () => {
-    console.log("running on " + PORT)
-  })
-}
-
-start()
+app.listen(PORT, () => {
+  console.log("running on " + PORT)
+})
