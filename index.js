@@ -5,6 +5,8 @@ import chromium from "@sparticuz/chromium"
 const app = express()
 const PORT = process.env.PORT || 3000
 
+app.use(express.static("public"))
+
 let browser
 
 async function initBrowser() {
