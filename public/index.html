@@ -169,7 +169,7 @@ document.getElementById("proxyForm").addEventListener("submit", e => {
   }
 
   // 元のプロキシ動作
-  window.location.href = `/proxy/${encodeURIComponent(url)}`;
+  window.location.href = `/proxy?url=${encodeURIComponent(url)}`;
 });
 </script>
 
