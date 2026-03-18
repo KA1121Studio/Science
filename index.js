@@ -1,18 +1,17 @@
 import express from "express"
-import puppeteer from "puppeteer"
+import puppeteer from "puppeteer-core"
+import chromium from "@sparticuz/chromium"
 
 const app = express()
-const PORT = 3000
+const PORT = process.env.PORT || 3000
 
 let browser
 
 async function initBrowser() {
   browser = await puppeteer.launch({
-    headless: "new",
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox"
-    ]
+    args: chromium.args,
+    executablePath: await chromium.executablePath(),
+    headless: true
   })
 }
 
@@ -25,9 +24,16 @@ app.get("/proxy", async (req, res) => {
     return
   }
 
+  if (!browser) {
+    res.status(503).send("browser not ready")
+    return
+  }
+
+  let page
+
   try {
 
-    const page = await browser.newPage()
+    page = await browser.newPage()
 
     await page.setUserAgent(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36"
@@ -35,12 +41,10 @@ app.get("/proxy", async (req, res) => {
 
     await page.goto(url, {
       waitUntil: "networkidle2",
-      timeout: 0
+      timeout: 30000
     })
 
     const html = await page.content()
-
-    await page.close()
 
     res.send(html)
 
@@ -48,14 +52,17 @@ app.get("/proxy", async (req, res) => {
 
     res.status(500).send(err.message)
 
+  } finally {
+    if (page) await page.close()
   }
 
 })
 
-app.listen(PORT, async () => {
-
+async function start() {
   await initBrowser()
+  app.listen(PORT, () => {
+    console.log("running on " + PORT)
+  })
+}
 
-  console.log("puppeteer proxy running " + PORT)
-
-})
+start()
