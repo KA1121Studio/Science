@@ -11,7 +11,9 @@ const __dirname = dirname(__filename)
 const app = express()
 const PORT = process.env.PORT || 3000
 
-const agent = new https.Agent({ rejectUnauthorized: false })
+const agent = new https.Agent({
+  rejectUnauthorized: false
+})
 
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
 
@@ -22,335 +24,241 @@ app.get("/", (req, res) => {
 })
 
 app.use("/proxy/:targetUrl*", async (req, res) => {
+  try {
+
+    let targetBase = decodeURIComponent(req.params.targetUrl)
+
+    if (!targetBase.startsWith("http"))
+      targetBase = "https://" + targetBase
+
+    const subPath = req.params[0] || ""
+    const query = req.url.includes("?")
+      ? req.url.slice(req.url.indexOf("?"))
+      : ""
+
+    const fullTarget =
+      targetBase +
+      (subPath.startsWith("/") ? "" : "/") +
+      subPath +
+      query
+
+    const response = await fetch(fullTarget, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122 Safari/537.36",
+
+        "Accept":
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+
+        "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+
+        "Accept-Encoding": "identity",
+
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+
+        "Upgrade-Insecure-Requests": "1",
+
+        // 追加ヘッダー
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-User": "?1",
+        "Sec-Fetch-Dest": "document",
+
+        // Cookieはそのまま渡す
+        "Cookie": req.headers.cookie || ""
+      },
+
+      redirect: "follow", // ←重要
+      agent
+    })
+
+    const setCookie = response.headers.raw()["set-cookie"]
+    if (setCookie) res.setHeader("set-cookie", setCookie)
+
+    const contentType =
+      response.headers.get("content-type")?.toLowerCase() || ""
+
+    // バイナリそのまま
+    if (!contentType.includes("text/html")) {
+      res.status(response.status)
+      response.body.pipe(res)
+      return
+    }
+
+    let body = await response.text()
+
+    const $ = cheerio.load(body, { decodeEntities: false })
+
+    function rewriteUrl(url) {
+      if (!url) return url
+
+      if (/^(data:|blob:|javascript:|about:|#)/i.test(url))
+        return url
+
+      if (url.startsWith("//"))
+        url = "https:" + url
+
+      try {
+        const abs = new URL(url, fullTarget).href
+        return "/proxy/" + encodeURIComponent(abs)
+      } catch {
+        return url
+      }
+    }
+
+    const attrs = [
+      ["img", "src"],
+      ["script", "src"],
+      ["link", "href"],
+      ["a", "href"],
+      ["iframe", "src"],
+      ["source", "src"],
+      ["video", "src"],
+      ["audio", "src"],
+      ["form", "action"]
+    ]
+
+    attrs.forEach(([tag, attr]) => {
+      $(tag).each((i, el) => {
+        const v = $(el).attr(attr)
+        if (!v) return
+        $(el).attr(attr, rewriteUrl(v))
+      })
+    })
 
-try {
+    // srcset対応
+    $("[srcset]").each((i, el) => {
+      const srcset = $(el).attr("srcset")
+      if (!srcset) return
 
-let targetBase = decodeURIComponent(req.params.targetUrl)
+      const parts = srcset.split(",")
 
-if (!targetBase.startsWith("http"))
-targetBase = "https://" + targetBase
+      const newParts = parts.map(p => {
+        const seg = p.trim().split(/\s+/)
+        seg[0] = rewriteUrl(seg[0])
+        return seg.join(" ")
+      })
 
-const subPath = req.params[0] || ""
-const query = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : ""
+      $(el).attr("srcset", newParts.join(", "))
+    })
 
-const fullTarget =
-targetBase +
-(subPath.startsWith("/") ? "" : "/") +
-subPath +
-query
+    function rewriteCss(css) {
+      return css.replace(/url\(['"]?([^'")]+)['"]?\)/gi, (m, u) => {
+        return "url(" + rewriteUrl(u) + ")"
+      })
+    }
 
-const response = await fetch(fullTarget, {
+    $("style").each((i, el) => {
+      $(el).html(rewriteCss($(el).html()))
+    })
 
-headers: {
+    $("[style]").each((i, el) => {
+      $(el).attr("style", rewriteCss($(el).attr("style")))
+    })
 
-"User-Agent":
-req.headers["user-agent"] ||
-"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+    // meta refresh
+    $("meta[http-equiv='refresh']").each((i, el) => {
+      const c = $(el).attr("content")
+      if (!c) return
 
-"Accept":
-"text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+      const m = c.match(/url=(.*)/i)
+      if (!m) return
 
-"Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+      $(el).attr("content", "0; url=" + rewriteUrl(m[1]))
+    })
 
-"Accept-Encoding": "identity",
+    $("base").remove()
 
-"Cache-Control": "no-cache",
-
-"Pragma": "no-cache",
-
-"Upgrade-Insecure-Requests": "1",
-
-"Referer": targetBase,
-
-"Origin": targetBase,
-
-"Cookie": req.headers.cookie || ""
-
-},
-
-redirect: "manual",
-
-agent
-
-})
-
-const location = response.headers.get("location")
-
-if (location) {
-
-let newUrl = location
-
-if (!location.startsWith("http"))
-newUrl = new URL(location, fullTarget).href
-
-return res.redirect("/proxy/" + encodeURIComponent(newUrl))
-
-}
-
-const setCookie = response.headers.raw()["set-cookie"]
-
-if (setCookie)
-res.setHeader("set-cookie", setCookie)
-
-const contentType =
-response.headers.get("content-type")?.toLowerCase() || ""
-
-if (!contentType.includes("text/html")) {
-
-res.status(response.status)
-
-response.body.pipe(res)
-
-return
-
-}
-
-let body = await response.text()
-
-const $ = cheerio.load(body, { decodeEntities: false })
-
-function rewriteUrl(url) {
-
-if (!url) return url
-
-if (/^(data:|blob:|javascript:|about:|#)/i.test(url))
-return url
-
-if (url.startsWith("//"))
-url = "https:" + url
-
-try {
-
-const abs = new URL(url, fullTarget).href
-
-return "/proxy/" + encodeURIComponent(abs)
-
-} catch {
-
-return url
-
-}
-
-}
-
-const attrs = [
-
-["img", "src"],
-["script", "src"],
-["link", "href"],
-["a", "href"],
-["iframe", "src"],
-["source", "src"],
-["video", "src"],
-["audio", "src"],
-["form", "action"]
-
-]
-
-attrs.forEach(([tag, attr]) => {
-
-$(tag).each((i, el) => {
-
-const v = $(el).attr(attr)
-
-if (!v) return
-
-$(el).attr(attr, rewriteUrl(v))
-
-})
-
-})
-
-$("[srcset]").each((i, el) => {
-
-const srcset = $(el).attr("srcset")
-
-if (!srcset) return
-
-const parts = srcset.split(",")
-
-const newParts = parts.map(p => {
-
-const seg = p.trim().split(/\s+/)
-
-seg[0] = rewriteUrl(seg[0])
-
-return seg.join(" ")
-
-})
-
-$(el).attr("srcset", newParts.join(", "))
-
-})
-
-function rewriteCss(css) {
-
-return css.replace(/url\(['"]?([^'")]+)['"]?\)/gi, (m, u) => {
-
-return "url(" + rewriteUrl(u) + ")"
-
-})
-
-}
-
-$("style").each((i, el) => {
-
-$(el).html(rewriteCss($(el).html()))
-
-})
-
-$("[style]").each((i, el) => {
-
-$(el).attr("style", rewriteCss($(el).attr("style")))
-
-})
-
-$("meta[http-equiv='refresh']").each((i, el) => {
-
-const c = $(el).attr("content")
-
-if (!c) return
-
-const m = c.match(/url=(.*)/i)
-
-if (!m) return
-
-$(el).attr(
-"content",
-"0; url=" + rewriteUrl(m[1])
-)
-
-})
-
-$("base").remove()
-
-const script = `
-
+    // JSフック改善版
+    const script = `
 <script>
-
 (function(){
 
 function toProxy(u){
+  if(!u) return u
+  if(/^(data:|blob:|javascript:|#)/i.test(u)) return u
 
-if(!u) return u
-
-if(/^(data:|blob:|javascript:|#)/i.test(u))
-return u
-
-try{
-
-const abs=new URL(u,location.href).href
-
-if(abs.includes('/proxy/'))
-return u
-
-return '/proxy/'+encodeURIComponent(abs)
-
-}catch{
-
-return u
-
+  try{
+    const abs=new URL(u,location.href).href
+    if(abs.includes('/proxy/')) return u
+    return '/proxy/'+encodeURIComponent(abs)
+  }catch{
+    return u
+  }
 }
 
-}
-
+// クリック
 document.addEventListener('click',function(e){
+  const a=e.target.closest('a[href]')
+  if(!a) return
 
-const a=e.target.closest('a[href]')
+  const href=a.getAttribute('href')
+  if(!href || href.startsWith('#')) return
 
-if(!a) return
-
-const href=a.getAttribute('href')
-
-if(!href) return
-
-if(href.startsWith('/proxy/')) return
-
-if(href.startsWith('#')) return
-
-e.preventDefault()
-
-location.href=toProxy(href)
-
+  if(!href.startsWith('/proxy/')){
+    e.preventDefault()
+    location.href=toProxy(href)
+  }
 },true)
 
-const f=window.fetch
+// fetch
+const _fetch = window.fetch
+window.fetch = function(input, init){
+  let url = input
+  if(typeof input === 'object') url = input.url
 
-window.fetch=function(input,init){
-
-let url=input
-
-if(typeof input==='object') url=input.url
-
-url=toProxy(url)
-
-return f.call(this,url,init)
-
+  return _fetch(toProxy(url), init)
 }
 
-const open=XMLHttpRequest.prototype.open
-
-XMLHttpRequest.prototype.open=function(m,u){
-
-return open.call(this,m,toProxy(u))
-
+// xhr
+const open = XMLHttpRequest.prototype.open
+XMLHttpRequest.prototype.open = function(m,u){
+  return open.call(this, m, toProxy(u))
 }
 
-const push=history.pushState
-
-history.pushState=function(s,t,u){
-
-if(u) u=toProxy(u)
-
-return push.call(this,s,t,u)
-
+// history
+const push = history.pushState
+history.pushState = function(s,t,u){
+  if(u) u = toProxy(u)
+  return push.call(this,s,t,u)
 }
 
 })()
-
 </script>
-
 `
 
-$("head").prepend(script)
+    $("head").prepend(script)
 
-body = $.html()
+    body = $.html()
 
-const headers = {}
+    const headers = {}
 
-response.headers.forEach((v, k) => {
+    response.headers.forEach((v, k) => {
+      const key = k.toLowerCase()
 
-const key = k.toLowerCase()
+      if (
+        ![
+          "content-length",
+          "content-encoding",
+          "transfer-encoding",
+          "content-security-policy",
+          "content-security-policy-report-only",
+          "x-frame-options"
+        ].includes(key)
+      ) headers[k] = v
+    })
 
-if (
-![
-"content-length",
-"content-encoding",
-"transfer-encoding",
-"content-security-policy",
-"content-security-policy-report-only",
-"x-frame-options"
-].includes(key)
-) headers[k] = v
+    headers["access-control-allow-origin"] = "*"
 
-})
+    res.set(headers)
+    res.status(response.status).send(body)
 
-headers["access-control-allow-origin"] = "*"
-
-res.set(headers)
-
-res.status(response.status).send(body)
-
-} catch (err) {
-
-res.status(500).send("Proxy Error<br>" + err.message)
-
-}
-
+  } catch (err) {
+    res.status(500).send("Proxy Error<br>" + err.message)
+  }
 })
 
 app.listen(PORT, () => {
-
-console.log("Proxy running " + PORT)
-
+  console.log("Proxy running " + PORT)
 })
