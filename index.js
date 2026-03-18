@@ -26,7 +26,7 @@ app.get("/proxy", async (req, res) => {
     return
   }
 
-  // ✅ URLバリデーション追加
+  // URLバリデーション追加
   if (!/^https?:\/\//i.test(url)) {
     return res.status(400).send("invalid url")
   }
@@ -59,7 +59,7 @@ app.get("/proxy", async (req, res) => {
 
     let html = await page.content()
 
-    // ✅ baseタグ注入（超重要）
+    // baseタグ注入
     html = html.replace(
       "<head>",
       `<head><base href="${url}">`
