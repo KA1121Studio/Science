@@ -1,21 +1,12 @@
 {
   "name": "anywhere-proxy",
   "version": "1.0.0",
-  "description": "Simple but powerful web proxy",
-  "main": "index.js",
   "type": "module",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
-    "http-proxy-middleware": "^3.0.0",
-    "node-fetch": "^3.3.2",
-    "cheerio": "1.0.0-rc.12",
-    "puppeteer-core": "^22.0.0",
-    "@sparticuz/chromium": "^123.0.0"
-  },
-  "engines": {
-    "node": ">=18"
+    "http-proxy-middleware": "^3.0.0"
   }
 }
