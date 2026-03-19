@@ -171,6 +171,13 @@ document.getElementById("proxyForm").addEventListener("submit", e => {
   // 元のプロキシ動作
   window.location.href = `/proxy?url=${encodeURIComponent(url)}`;
 });
+
+  if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js")
+    .then(() => console.log("SW ready"))
+    .catch(console.error)
+}
+  
 </script>
 
 </body>
