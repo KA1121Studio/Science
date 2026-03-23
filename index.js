@@ -11,45 +11,42 @@ app.get("/proxy/*", async (req, res) => {
   try {
     const raw = req.params[0]
     const targetUrl = decodeURIComponent(raw)
+
+    // ❌ about:blank防止
+    if (targetUrl.startsWith("about:")) {
+      return res.status(400).send("invalid url")
+    }
+
     const urlObj = new URL(targetUrl)
 
     const response = await fetch(targetUrl, {
-      method: req.method,
       headers: {
-        "user-agent": req.headers["user-agent"] || "",
+        "user-agent": req.headers["user-agent"] || ""
       }
     })
 
     const contentType = response.headers.get("content-type") || ""
 
     // =========================
-    // 🖼 画像・動画はそのまま返す
+    // 🧠 HTMLだけ加工
     // =========================
-    if (!contentType.includes("text/html")) {
-      res.setHeader("content-type", contentType)
-      response.body.pipe(res)
-      return
-    }
+    if (contentType.includes("text/html")) {
+      let body = await response.text()
 
-    // =========================
-    // 🧠 HTMLだけ処理
-    // =========================
-    let body = await response.text()
+      body = body.replace(
+        "<head>",
+        `<head><base href="/proxy/${targetUrl}">`
+      )
 
-    // baseタグ
-    body = body.replace(
-      "<head>",
-      `<head><base href="/proxy/${targetUrl}">`
-    )
-
-    // fetchフック
-    const inject = `
+      const inject = `
 <script>
 (function(){
 const originalFetch = window.fetch;
 window.fetch = function(input, init){
   try{
     let url = typeof input === "object" ? input.url : input;
+    if(url.startsWith("about:")) return originalFetch(input, init);
+
     const absolute = new URL(url, location.href).href;
     const proxied = "/proxy/" + encodeURIComponent(absolute);
 
@@ -65,6 +62,8 @@ window.fetch = function(input, init){
 const open = XMLHttpRequest.prototype.open;
 XMLHttpRequest.prototype.open = function(method, url){
   try{
+    if(url.startsWith("about:")) return open.call(this, method, url);
+
     const absolute = new URL(url, location.href).href;
     url = "/proxy/" + encodeURIComponent(absolute);
   }catch(e){}
@@ -74,30 +73,55 @@ XMLHttpRequest.prototype.open = function(method, url){
 </script>
 `
 
-    body = body.replace("</head>", inject + "</head>")
+      body = body.replace("</head>", inject + "</head>")
 
-    // URL書き換え（安全版）
-    body = body.replace(/(src|href)=["'](.*?)["']/gi, (m, attr, link) => {
-      try {
-        if (
-          link.startsWith("data:") ||
-          link.startsWith("#") ||
-          link.startsWith("javascript:")
-        ) return m
+      body = body.replace(/(src|href)=["'](.*?)["']/gi, (m, attr, link) => {
+        try {
+          if (
+            link.startsWith("data:") ||
+            link.startsWith("#") ||
+            link.startsWith("javascript:") ||
+            link.startsWith("about:")
+          ) return m
 
-        const absolute = new URL(link, targetUrl).href
-        return `${attr}="/proxy/${encodeURIComponent(absolute)}"`
-      } catch {
-        return m
-      }
-    })
+          const absolute = new URL(link, targetUrl).href
+          return `${attr}="/proxy/${encodeURIComponent(absolute)}"`
+        } catch {
+          return m
+        }
+      })
 
-    // CSP解除
-    res.removeHeader("content-security-policy")
-    res.removeHeader("x-frame-options")
+      res.setHeader("content-type", contentType)
+      res.send(body)
+      return
+    }
 
+    // =========================
+    // 🎨 CSSは書き換え
+    // =========================
+    if (contentType.includes("text/css")) {
+      let body = await response.text()
+
+      body = body.replace(/url\((.*?)\)/g, (m, url) => {
+        url = url.replace(/["']/g, "")
+        try {
+          const absolute = new URL(url, targetUrl).href
+          return `url("/proxy/${encodeURIComponent(absolute)}")`
+        } catch {
+          return m
+        }
+      })
+
+      res.setHeader("content-type", contentType)
+      res.send(body)
+      return
+    }
+
+    // =========================
+    // 🔥 JS・画像・その他は全部stream
+    // =========================
     res.setHeader("content-type", contentType)
-    res.send(body)
+    response.body.pipe(res)
 
   } catch (e) {
     console.error(e)
