@@ -5,7 +5,7 @@ import { URL } from "url"
 const app = express()
 const PORT = process.env.PORT || 3000
 
-// 🔥 body対応（POSTなど）
+// 🔥 POST対応
 app.use(express.raw({ type: "*/*" }))
 
 app.use(express.static("public"))
@@ -33,12 +33,19 @@ app.get("/proxy/*", async (req, res) => {
 
     const contentType = response.headers.get("content-type") || ""
 
-    // 🔥 HTMLだけ書き換え
-    if (contentType.includes("text/html")) {
+    // =========================
+    // 🧠 テキスト系は書き換え
+    // =========================
+    if (
+      contentType.includes("text/html") ||
+      contentType.includes("javascript") ||
+      contentType.includes("text/css")
+    ) {
       let body = await response.text()
 
-      // --- fetch / XHR フック ---
-      const inject = `
+      // ================= HTML =================
+      if (contentType.includes("text/html")) {
+        const inject = `
 <script>
 (function(){
 const originalFetch = window.fetch;
@@ -69,28 +76,55 @@ XMLHttpRequest.prototype.open = function(method, url){
 </script>
 `
 
-      body = body.replace("</head>", inject + "</head>")
+        body = body.replace("</head>", inject + "</head>")
 
-      // --- URL書き換え ---
-      body = body.replace(
-        /(src|href|action)=["'](.*?)["']/gi,
-        (m, attr, link) => {
-          try {
-            if (
-              link.startsWith("data:") ||
-              link.startsWith("#") ||
-              link.startsWith("javascript:")
-            ) return m
+        // URL書き換え
+        body = body.replace(
+          /(src|href|action)=["'](.*?)["']/gi,
+          (m, attr, link) => {
+            try {
+              if (
+                link.startsWith("data:") ||
+                link.startsWith("#") ||
+                link.startsWith("javascript:")
+              ) return m
 
-            const absolute = new URL(link, targetUrl).href
-            return `${attr}="/proxy/${encodeURIComponent(absolute)}"`
-          } catch {
-            return m
+              const absolute = new URL(link, targetUrl).href
+              return `${attr}="/proxy/${encodeURIComponent(absolute)}"`
+            } catch {
+              return m
+            }
           }
-        }
-      )
+        )
+      }
 
-      // 🔥 CSP解除
+      // ================= JS =================
+      if (contentType.includes("javascript")) {
+        body = body.replace(
+          /(["'`])(https?:\/\/[^"'`]+)\1/g,
+          (m, q, url) => {
+            return `${q}/proxy/${encodeURIComponent(url)}${q}`
+          }
+        )
+      }
+
+      // ================= CSS =================
+      if (contentType.includes("text/css")) {
+        body = body.replace(
+          /url\((.*?)\)/g,
+          (m, url) => {
+            url = url.replace(/["']/g, "")
+            try {
+              const absolute = new URL(url, targetUrl).href
+              return `url("/proxy/${encodeURIComponent(absolute)}")`
+            } catch {
+              return m
+            }
+          }
+        )
+      }
+
+      // 🔥 セキュリティ解除
       res.removeHeader("content-security-policy")
       res.removeHeader("content-security-policy-report-only")
       res.removeHeader("x-frame-options")
@@ -107,7 +141,9 @@ XMLHttpRequest.prototype.open = function(method, url){
       return
     }
 
-    // 🔥 HTML以外はストリーミング（最重要）
+    // =========================
+    // 🖼 バイナリはstream
+    // =========================
     res.status(response.status)
 
     response.headers.forEach((value, key) => {
