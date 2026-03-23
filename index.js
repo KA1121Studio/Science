@@ -135,7 +135,7 @@ document.addEventListener("click", function(e){
         (m, a, url) => {
           try {
             const absolute = new URL(url, targetUrl).href
-            return \`http-equiv="refresh" content="\${a}url=/proxy/\${encodeURIComponent(absolute)}"\`
+            return `http-equiv="refresh" content="${a}url=/proxy/${encodeURIComponent(absolute)}"`
           } catch {
             return m
           }
