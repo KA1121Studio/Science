@@ -5,6 +5,9 @@ import { URL } from "url"
 const app = express()
 const PORT = process.env.PORT || 3000
 
+// 🔥 body対応（POSTなど）
+app.use(express.raw({ type: "*/*" }))
+
 app.use(express.static("public"))
 
 app.get("/proxy/*", async (req, res) => {
@@ -16,23 +19,25 @@ app.get("/proxy/*", async (req, res) => {
     const response = await fetch(targetUrl, {
       method: req.method,
       headers: {
-        "user-agent": req.headers["user-agent"] || ""
-      }
+        ...req.headers,
+        host: urlObj.host,
+        origin: urlObj.origin,
+        referer: urlObj.href,
+        cookie: req.headers.cookie || ""
+      },
+      body:
+        req.method !== "GET" && req.method !== "HEAD"
+          ? req.body
+          : undefined
     })
 
-    let body = await response.text()
     const contentType = response.headers.get("content-type") || ""
 
-    // 🔥 HTML処理
+    // 🔥 HTMLだけ書き換え
     if (contentType.includes("text/html")) {
+      let body = await response.text()
 
-      // baseタグ
-      body = body.replace(
-        "<head>",
-        `<head><base href="/proxy/${targetUrl}">`
-      )
-
-      // fetchフック注入
+      // --- fetch / XHR フック ---
       const inject = `
 <script>
 (function(){
@@ -66,33 +71,56 @@ XMLHttpRequest.prototype.open = function(method, url){
 
       body = body.replace("</head>", inject + "</head>")
 
-      // src / href 書き換え
-      body = body.replace(/(src|href)=["'](.*?)["']/gi, (m, attr, link) => {
-        try {
-          const absolute = new URL(link, targetUrl).href
-          return `${attr}="/proxy/${encodeURIComponent(absolute)}"`
-        } catch {
-          return m
-        }
-      })
-    }
-
-    // 🔥 JS処理（簡易）
-    if (contentType.includes("javascript")) {
+      // --- URL書き換え ---
       body = body.replace(
-        /fetch\((.*?)\)/g,
-        (match, url) => {
-          return `fetch("/proxy/" + encodeURIComponent(new URL(${url}, "${targetUrl}").href))`
+        /(src|href|action)=["'](.*?)["']/gi,
+        (m, attr, link) => {
+          try {
+            if (
+              link.startsWith("data:") ||
+              link.startsWith("#") ||
+              link.startsWith("javascript:")
+            ) return m
+
+            const absolute = new URL(link, targetUrl).href
+            return `${attr}="/proxy/${encodeURIComponent(absolute)}"`
+          } catch {
+            return m
+          }
         }
       )
+
+      // 🔥 CSP解除
+      res.removeHeader("content-security-policy")
+      res.removeHeader("content-security-policy-report-only")
+      res.removeHeader("x-frame-options")
+      res.removeHeader("x-content-type-options")
+
+      // 🔥 cookie返却
+      const cookies = response.headers.raw()["set-cookie"]
+      if (cookies) {
+        res.setHeader("set-cookie", cookies)
+      }
+
+      res.setHeader("content-type", contentType)
+      res.send(body)
+      return
     }
 
-    // 🔥 CSP解除
-    res.removeHeader("content-security-policy")
-    res.removeHeader("x-frame-options")
+    // 🔥 HTML以外はストリーミング（最重要）
+    res.status(response.status)
 
-    res.setHeader("content-type", contentType)
-    res.send(body)
+    response.headers.forEach((value, key) => {
+      if (key.toLowerCase() === "content-encoding") return
+      res.setHeader(key, value)
+    })
+
+    const cookies = response.headers.raw()["set-cookie"]
+    if (cookies) {
+      res.setHeader("set-cookie", cookies)
+    }
+
+    response.body.pipe(res)
 
   } catch (e) {
     console.error(e)
