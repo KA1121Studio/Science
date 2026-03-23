@@ -11,33 +11,28 @@ app.get("/proxy/*", async (req, res) => {
   try {
     const raw = req.params[0]
     const targetUrl = decodeURIComponent(raw)
-
-    // ❌ about:blank防止
-    if (targetUrl.startsWith("about:")) {
-      return res.status(400).send("invalid url")
-    }
-
     const urlObj = new URL(targetUrl)
 
     const response = await fetch(targetUrl, {
+      method: req.method,
       headers: {
         "user-agent": req.headers["user-agent"] || ""
       }
     })
 
+    let body = await response.text()
     const contentType = response.headers.get("content-type") || ""
 
-    // =========================
-    // 🧠 HTMLだけ加工
-    // =========================
+    // 🔥 HTML処理
     if (contentType.includes("text/html")) {
-      let body = await response.text()
 
+      // baseタグ
       body = body.replace(
         "<head>",
         `<head><base href="/proxy/${targetUrl}">`
       )
 
+      // fetchフック注入
       const inject = `
 <script>
 (function(){
@@ -45,8 +40,6 @@ const originalFetch = window.fetch;
 window.fetch = function(input, init){
   try{
     let url = typeof input === "object" ? input.url : input;
-    if(url.startsWith("about:")) return originalFetch(input, init);
-
     const absolute = new URL(url, location.href).href;
     const proxied = "/proxy/" + encodeURIComponent(absolute);
 
@@ -62,8 +55,6 @@ window.fetch = function(input, init){
 const open = XMLHttpRequest.prototype.open;
 XMLHttpRequest.prototype.open = function(method, url){
   try{
-    if(url.startsWith("about:")) return open.call(this, method, url);
-
     const absolute = new URL(url, location.href).href;
     url = "/proxy/" + encodeURIComponent(absolute);
   }catch(e){}
@@ -75,53 +66,33 @@ XMLHttpRequest.prototype.open = function(method, url){
 
       body = body.replace("</head>", inject + "</head>")
 
+      // src / href 書き換え
       body = body.replace(/(src|href)=["'](.*?)["']/gi, (m, attr, link) => {
         try {
-          if (
-            link.startsWith("data:") ||
-            link.startsWith("#") ||
-            link.startsWith("javascript:") ||
-            link.startsWith("about:")
-          ) return m
-
           const absolute = new URL(link, targetUrl).href
           return `${attr}="/proxy/${encodeURIComponent(absolute)}"`
         } catch {
           return m
         }
       })
-
-      res.setHeader("content-type", contentType)
-      res.send(body)
-      return
     }
 
-    // =========================
-    // 🎨 CSSは書き換え
-    // =========================
-    if (contentType.includes("text/css")) {
-      let body = await response.text()
-
-      body = body.replace(/url\((.*?)\)/g, (m, url) => {
-        url = url.replace(/["']/g, "")
-        try {
-          const absolute = new URL(url, targetUrl).href
-          return `url("/proxy/${encodeURIComponent(absolute)}")`
-        } catch {
-          return m
+    // 🔥 JS処理（簡易）
+    if (contentType.includes("javascript")) {
+      body = body.replace(
+        /fetch\((.*?)\)/g,
+        (match, url) => {
+          return `fetch("/proxy/" + encodeURIComponent(new URL(${url}, "${targetUrl}").href))`
         }
-      })
-
-      res.setHeader("content-type", contentType)
-      res.send(body)
-      return
+      )
     }
 
-    // =========================
-    // 🔥 JS・画像・その他は全部stream
-    // =========================
+    // 🔥 CSP解除
+    res.removeHeader("content-security-policy")
+    res.removeHeader("x-frame-options")
+
     res.setHeader("content-type", contentType)
-    response.body.pipe(res)
+    res.send(body)
 
   } catch (e) {
     console.error(e)
