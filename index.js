@@ -5,9 +5,6 @@ import { URL } from "url"
 const app = express()
 const PORT = process.env.PORT || 3000
 
-// 🔥 POST対応
-app.use(express.raw({ type: "*/*" }))
-
 app.use(express.static("public"))
 
 app.get("/proxy/*", async (req, res) => {
@@ -19,33 +16,34 @@ app.get("/proxy/*", async (req, res) => {
     const response = await fetch(targetUrl, {
       method: req.method,
       headers: {
-        ...req.headers,
-        host: urlObj.host,
-        origin: urlObj.origin,
-        referer: urlObj.href,
-        cookie: req.headers.cookie || ""
-      },
-      body:
-        req.method !== "GET" && req.method !== "HEAD"
-          ? req.body
-          : undefined
+        "user-agent": req.headers["user-agent"] || "",
+      }
     })
 
     const contentType = response.headers.get("content-type") || ""
 
     // =========================
-    // 🧠 テキスト系は書き換え
+    // 🖼 画像・動画はそのまま返す
     // =========================
-    if (
-      contentType.includes("text/html") ||
-      contentType.includes("javascript") ||
-      contentType.includes("text/css")
-    ) {
-      let body = await response.text()
+    if (!contentType.includes("text/html")) {
+      res.setHeader("content-type", contentType)
+      response.body.pipe(res)
+      return
+    }
 
-      // ================= HTML =================
-      if (contentType.includes("text/html")) {
-        const inject = `
+    // =========================
+    // 🧠 HTMLだけ処理
+    // =========================
+    let body = await response.text()
+
+    // baseタグ
+    body = body.replace(
+      "<head>",
+      `<head><base href="/proxy/${targetUrl}">`
+    )
+
+    // fetchフック
+    const inject = `
 <script>
 (function(){
 const originalFetch = window.fetch;
@@ -76,87 +74,30 @@ XMLHttpRequest.prototype.open = function(method, url){
 </script>
 `
 
-        body = body.replace("</head>", inject + "</head>")
+    body = body.replace("</head>", inject + "</head>")
 
-        // URL書き換え
-        body = body.replace(
-          /(src|href|action)=["'](.*?)["']/gi,
-          (m, attr, link) => {
-            try {
-              if (
-                link.startsWith("data:") ||
-                link.startsWith("#") ||
-                link.startsWith("javascript:")
-              ) return m
+    // URL書き換え（安全版）
+    body = body.replace(/(src|href)=["'](.*?)["']/gi, (m, attr, link) => {
+      try {
+        if (
+          link.startsWith("data:") ||
+          link.startsWith("#") ||
+          link.startsWith("javascript:")
+        ) return m
 
-              const absolute = new URL(link, targetUrl).href
-              return `${attr}="/proxy/${encodeURIComponent(absolute)}"`
-            } catch {
-              return m
-            }
-          }
-        )
+        const absolute = new URL(link, targetUrl).href
+        return `${attr}="/proxy/${encodeURIComponent(absolute)}"`
+      } catch {
+        return m
       }
-
-      // ================= JS =================
-      if (contentType.includes("javascript")) {
-        body = body.replace(
-          /(["'`])(https?:\/\/[^"'`]+)\1/g,
-          (m, q, url) => {
-            return `${q}/proxy/${encodeURIComponent(url)}${q}`
-          }
-        )
-      }
-
-      // ================= CSS =================
-      if (contentType.includes("text/css")) {
-        body = body.replace(
-          /url\((.*?)\)/g,
-          (m, url) => {
-            url = url.replace(/["']/g, "")
-            try {
-              const absolute = new URL(url, targetUrl).href
-              return `url("/proxy/${encodeURIComponent(absolute)}")`
-            } catch {
-              return m
-            }
-          }
-        )
-      }
-
-      // 🔥 セキュリティ解除
-      res.removeHeader("content-security-policy")
-      res.removeHeader("content-security-policy-report-only")
-      res.removeHeader("x-frame-options")
-      res.removeHeader("x-content-type-options")
-
-      // 🔥 cookie返却
-      const cookies = response.headers.raw()["set-cookie"]
-      if (cookies) {
-        res.setHeader("set-cookie", cookies)
-      }
-
-      res.setHeader("content-type", contentType)
-      res.send(body)
-      return
-    }
-
-    // =========================
-    // 🖼 バイナリはstream
-    // =========================
-    res.status(response.status)
-
-    response.headers.forEach((value, key) => {
-      if (key.toLowerCase() === "content-encoding") return
-      res.setHeader(key, value)
     })
 
-    const cookies = response.headers.raw()["set-cookie"]
-    if (cookies) {
-      res.setHeader("set-cookie", cookies)
-    }
+    // CSP解除
+    res.removeHeader("content-security-policy")
+    res.removeHeader("x-frame-options")
 
-    response.body.pipe(res)
+    res.setHeader("content-type", contentType)
+    res.send(body)
 
   } catch (e) {
     console.error(e)
