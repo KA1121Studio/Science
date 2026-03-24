@@ -189,7 +189,7 @@ window.WebSocket = function(url, protocols){
         try {
           if (link.startsWith("data:") || link.startsWith("javascript:")) return m
           const absolute = new URL(link, targetUrl).href
-          return \`\${attr}="/proxy/\${encodeURIComponent(absolute)}"\`
+          return attr + '="/proxy/' + encodeURIComponent(absolute) + '"'
         } catch {
           return m
         }
