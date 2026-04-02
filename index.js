@@ -10,7 +10,7 @@ app.use(express.static("public"))
 app.use(express.json())
 app.use(express.urlencoded({ extended: true }))
 
-// 🔒 proxy以外禁止
+//  proxy以外禁止
 app.use((req, res, next) => {
   if (!req.path.startsWith("/proxy/")) {
     return res.status(403).send("Use proxy only")
@@ -41,7 +41,7 @@ app.all("/proxy/*", async (req, res) => {
       redirect: "manual"
     })
 
-    // 🔁 リダイレクト対応
+    //  リダイレクト対応
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location")
       if (location) {
@@ -52,13 +52,13 @@ app.all("/proxy/*", async (req, res) => {
 
     const contentType = response.headers.get("content-type") || ""
 
-    // 🍪 cookie返却
+    //  cookie返却
     const setCookie = response.headers.raw()["set-cookie"]
     if (setCookie) {
       res.setHeader("set-cookie", setCookie)
     }
 
-    // 📦 バイナリ対応
+    //  バイナリ対応
     const isText =
       contentType.includes("text") ||
       contentType.includes("javascript") ||
